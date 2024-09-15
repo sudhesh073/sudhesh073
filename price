@@ -1,0 +1,102 @@
+import os
+import yfinance as yf
+import numpy as np
+import pandas as pd
+from sklearn.preprocessing import MinMaxScaler
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dropout, Dense
+import matplotlib.pyplot as plt
+
+# Set the data source: True for Yahoo Finance, False for CSV file
+use_yahoo_finance = True
+
+if use_yahoo_finance:
+    # Fetch data from Yahoo Finance
+    ticker = "AAPL"  # Replace with the desired ticker symbol
+    data = yf.download(ticker)
+
+    if data.empty:
+        print("That ticker does not exist")
+        exit()
+
+    # Prepare the data
+    data_scaler = MinMaxScaler(feature_range=(0, 1))
+    scaled_data = data_scaler.fit_transform(data['Close'].values.reshape(-1, 1))
+else:
+    # Under this section please comprehend the code and ensure that you have a csv file that is structured the same
+    # The use of there being a title such as 'price' must be in the csv file
+    # Load data from the CSV file
+    file_path = 'path/to/your/csv/file.csv'  # Replace with your file path
+    if os.path.exists(file_path):
+        data = pd.read_csv(file_path)
+        # Extract prices
+        prices = data['price'].values.reshape(-1, 1)
+
+        # Perform MinMax scaling on the prices
+        data_scaler = MinMaxScaler(feature_range=(0, 1))
+        scaled_data = data_scaler.fit_transform(prices)
+    else:
+        print("CSV file not found")
+        exit()
+
+# Define sequence length (number of days to look back)
+sequence_length = 10
+
+# Function to create sequences of data for LSTM
+def create_sequences(data, seq_length):
+    X, y = [], []
+    for i in range(len(data) - seq_length):
+        X.append(data[i:i + seq_length])
+        y.append(data[i + seq_length])
+    return np.array(X), np.array(y)
+
+# Create sequences for training
+X_train, y_train = create_sequences(scaled_data, sequence_length)
+
+# Reshape the data for LSTM
+X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+
+# Build the LSTM model
+model = Sequential()
+model.add(LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], 1)))
+model.add(Dropout(0.2))
+model.add(LSTM(units=50, return_sequences=True))
+model.add(Dropout(0.2))
+model.add(LSTM(units=50))
+model.add(Dropout(0.2))
+model.add(Dense(units=1))
+
+# Compile the model
+model.compile(optimizer='adam', loss='mean_squared_error')
+
+# Train the model
+model.fit(X_train, y_train, epochs=25, batch_size=32)
+
+# Predict the next week's closing prices
+days_to_predict = 7  # Predicting 7 trading days (1 week)
+last_sequence = scaled_data[-sequence_length:].reshape(1, sequence_length, 1)
+predicted_prices = []
+
+for _ in range(days_to_predict):
+    next_prediction = model.predict(last_sequence)[0, 0]
+    predicted_prices.append(next_prediction)
+    last_sequence = np.append(last_sequence, [[[next_prediction]]], axis=1)
+    last_sequence = last_sequence[:, 1:, :]  # Remove the first element in the sequence
+
+# Inverse transform the predicted prices to the original scale
+predicted_prices = data_scaler.inverse_transform(np.array(predicted_prices).reshape(-1, 1))
+
+# Generate dates for the next week
+last_date = data.index[-1]
+predicted_dates = pd.date_range(start=last_date + pd.Timedelta(days=1), periods=days_to_predict, freq='B')
+
+# Plotting the actual and predicted prices
+plt.figure(figsize=(10, 6))
+plt.plot(data.index, data['Close'], label='Actual Prices')
+plt.plot(predicted_dates, predicted_prices, label='Predicted Prices', marker='o')
+plt.title('Predicted Prices for the Next Week')
+plt.xlabel('Date')
+plt.ylabel('Price')
+plt.legend()
+plt.grid(True)
+plt.show()
